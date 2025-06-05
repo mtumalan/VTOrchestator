@@ -1,0 +1,52 @@
+version: "3.11"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: orchestrator_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestrator_web
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      # Django settings
+      - DJANGO_SETTINGS_MODULE=orchestrator.settings
+      # Celery broker/back end (Redis)
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      # VT API callback credentials
+      - VT_API_URL=${VT_API_URL}
+      - VT_API_TOKEN=${VT_API_TOKEN}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/home/orchestrator
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestrator_worker
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=orchestrator.settings
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - VT_API_URL=${VT_API_URL}
+      - VT_API_TOKEN=${VT_API_TOKEN}
+    command: >
+      sh -c "celery -A orchestrator worker --loglevel=info"
+    volumes:
+      - .:/home/orchestrator
