@@ -27,7 +27,7 @@ services:
       - VT_API_URL=${VT_API_URL}
       - VT_API_TOKEN=${VT_API_TOKEN}
     ports:
-      - "8000:8000"
+      - "69:69"
     volumes:
       - .:/home/orchestrator
 
