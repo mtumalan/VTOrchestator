@@ -2,45 +2,48 @@ import os
 import requests
 from django.conf import settings
 from celery import shared_task
-from django.core.files.base import ContentFile
 
 from .inference import run_segmentation_outputs
 
 
 @shared_task(bind=True)
-def process_job(self, job_id: str, vision_model_id: int, input_image_url: str):
+def process_job(self, job_id: str, vision_model_id: int, image_bytes: bytes):
     """
-    1) Download image from VT_API
-    2) Run inference (run_segmentation_outputs)
-    3) Call VT_API PATCH /inference-jobs/{job_id}/orch_complete/ with mask_image file
-    """
+    Executed by Celery worker.
 
-    # 1) Download the image bytes
-    try:
-        resp = requests.get(input_image_url, timeout=10)
-        resp.raise_for_status()
-        image_bytes = resp.content
-    except Exception:
-        # If we cannot fetch the image, inform VT_API that we failed
-        patch_url = f"{settings.VT_API_URL}/inference-jobs/{job_id}/orch_complete/"
-        data = {"status": "FAILED", "error_message": "Cannot fetch input image."}
-        headers = {"Authorization": f"Token {settings.VT_API_TOKEN}"}
-        requests.patch(patch_url, data=data, headers=headers, timeout=5)
+    Parameters
+    ----------
+    job_id : str
+        UUID from VT.
+    vision_model_id : int
+        Primary-key of the VisionModel chosen by the user.
+    image_bytes : bytes
+        Raw JPG/PNG bytes that VT already sent in the enqueue request.
+
+    Steps
+    -----
+    1) Run local inference (run_segmentation_outputs).
+    2) PATCH VT /inference-jobs/{job_id}/orch_complete/ with:
+         - status = DONE | FAILED
+         - mask_image file (mask.png) if success
+         - error_message if failure
+    """
+    # ─── 0. Quick sanity-check on the payload ─────────────────────
+    if not image_bytes:
+        _notify_vt(job_id, status="FAILED", error="Empty image payload")
         return
 
-    # 2) Compute classdict CSV path
+    # ─── 1. Classdict CSV path — identical to before ──────────────
     classdict_csv = os.path.join(
         settings.BASE_DIR,
-        "VisionChallenge", "collaboration_it_mx", "output_images", "class_names_colors.csv"
+        "VisionChallenge", "collaboration_it_mx",
+        "output_images", "class_names_colors.csv"
     )
     if not os.path.exists(classdict_csv):
-        patch_url = f"{settings.VT_API_URL}/inference-jobs/{job_id}/orch_complete/"
-        data = {"status": "FAILED", "error_message": "Classdict CSV not found."}
-        headers = {"Authorization": f"Token {settings.VT_API_TOKEN}"}
-        requests.patch(patch_url, data=data, headers=headers, timeout=5)
+        _notify_vt(job_id, status="FAILED", error="Classdict CSV not found.")
         return
 
-    # 3) Run inference locally
+    # ─── 2. Run segmentation locally ──────────────────────────────
     try:
         outputs = run_segmentation_outputs(
             image_bytes=image_bytes,
@@ -49,34 +52,39 @@ def process_job(self, job_id: str, vision_model_id: int, input_image_url: str):
             classdict_csv=classdict_csv,
             target_size=(224, 224),
         )
-    except Exception as e:
-        patch_url = f"{settings.VT_API_URL}/inference-jobs/{job_id}/orch_complete/"
-        data = {"status": "FAILED", "error_message": str(e)}
-        headers = {"Authorization": f"Token {settings.VT_API_TOKEN}"}
-        requests.patch(patch_url, data=data, headers=headers, timeout=5)
+    except Exception as exc:
+        _notify_vt(job_id, status="FAILED", error=str(exc))
         return
 
-    # 4) Prepare a multipart/form-data payload with exactly one file (mask.png).
-    #    If you want to send both mask.png and bbox.png, you could zip them or send two fields.
+    # ─── 3. Build multipart payload (mask.png) ────────────────────
     mask_bytes = outputs.get("mask.png")
     if mask_bytes is None:
-        patch_url = f"{settings.VT_API_URL}/inference-jobs/{job_id}/orch_complete/"
-        data = {"status": "FAILED", "error_message": "No mask generated."}
-        headers = {"Authorization": f"Token {settings.VT_API_TOKEN}"}
-        requests.patch(patch_url, data=data, headers=headers, timeout=5)
+        _notify_vt(job_id, status="FAILED", error="No mask generated.")
         return
 
-    files = {
-        "mask_image": ("mask.png", mask_bytes, "image/png"),
-    }
-    data = {"status": "DONE"}  # no error_message
+    files = {"mask_image": ("mask.png", mask_bytes, "image/png")}
+    _notify_vt(job_id, status="DONE", files=files)
 
-    # 5) Call back VT_API to set mask_image + status
+
+# ──────────────────────────────────────────────────────────────────
+# Helper: single place to POST / PATCH back to VT
+# ──────────────────────────────────────────────────────────────────
+def _notify_vt(job_id: str, *, status: str, error: str | None = None, files=None):
+    """
+    Send a PATCH to VT with consistent auth header.
+    """
     patch_url = f"{settings.VT_API_URL}/inference-jobs/{job_id}/orch_complete/"
-    headers = {"Authorization": f"Token {settings.VT_API_TOKEN}"}
+    data = {"status": status}
+    if error:
+        data["error_message"] = error
+
+    headers = {"X-ORCH-TOKEN": settings.VT_API_TOKEN}
 
     try:
         requests.patch(patch_url, data=data, files=files, headers=headers, timeout=10)
     except Exception:
-        # If callback fails, there’s not much we can do here. At best, log it.
-        pass
+        # Last-chance logging; nothing else we can do.
+        self = _notify_vt  # keep flake8 quiet for unused self if not inside task
+        getattr(self, "logger", print)(
+            f"[orchestrator] could not PATCH {patch_url}"
+        )

@@ -25,13 +25,13 @@ USER orchestrator
 COPY --chown=orchestrator:orchestrator . /home/orchestrator/
 
 # 6. Expose port 69 for Django
-EXPOSE 69
+EXPOSE 8000
 
 # 7. Default entrypoint: run migrations then Gunicorn
 CMD ["sh", "-c", "\
         python manage.py migrate && \
         gunicorn orchestrator.wsgi:application \
-            --bind 0.0.0.0:69 \
+            --bind 0.0.0.0:8000 \
             --access-logfile - \
             --error-logfile - \
     "]

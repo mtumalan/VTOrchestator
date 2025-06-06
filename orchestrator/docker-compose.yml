@@ -6,7 +6,7 @@ services:
     container_name: orchestrator_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6378:6379"
 
   web:
     build:
@@ -27,7 +27,7 @@ services:
       - VT_API_URL=${VT_API_URL}
       - VT_API_TOKEN=${VT_API_TOKEN}
     ports:
-      - "69:69"
+      - "8001:8000"
     volumes:
       - .:/home/orchestrator
 
