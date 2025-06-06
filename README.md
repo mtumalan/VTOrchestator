@@ -35,7 +35,6 @@ A Django-based service for orchestrating computer vision model inference jobs us
    - Redis
 
 4. The API will be available at `http://localhost:69/`
-   ```
 
 ## API Usage
 - **POST /enqueue/**
