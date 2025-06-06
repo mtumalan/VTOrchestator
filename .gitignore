@@ -1,4 +1,3 @@
 /venv
 .env
 /.cache
-db.sqlite3
