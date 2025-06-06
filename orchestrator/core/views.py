@@ -3,31 +3,25 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from .tasks import process_job
+from django.conf import settings
 
 class EnqueueAPIView(APIView):
-    """
-    Receives:
-      POST /enqueue/
-      {
-        job_id: "<uuid>",
-        vision_model_id: <int>,
-        input_image_url: "<http://vt/.../file.png>"
-      }
-    Enqueues a Celery task and returns 202 Accepted.
-    """
-    permission_classes = [AllowAny]  # or check a shared secret header
+    permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
-        job_id = request.data.get("job_id")
+        if request.headers.get("X-ORCH-TOKEN") != settings.VT_API_TOKEN:
+            return Response({"detail": "Forbidden"}, status=403)
+
+        job_id   = request.data.get("job_id")
         model_id = request.data.get("vision_model_id")
-        img_url = request.data.get("input_image_url")
+        img_file = request.FILES.get("input_image")
 
-        if not job_id or not model_id or not img_url:
-            return Response(
-                {"detail": "job_id, vision_model_id, and input_image_url are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if not job_id or not model_id or img_file is None:
+            return Response({"detail": "job_id, vision_model_id, input_image required"},
+                            status=400)
 
-        # 1) Enqueue the Celery task
-        process_job.delay(job_id, model_id, img_url)
-        return Response({"status": "enqueued"}, status=status.HTTP_202_ACCEPTED)
+        # read the bytes once; Celery will get them as an arg
+        image_bytes = img_file.read()
+        process_job.delay(job_id, int(model_id), image_bytes)   # ⬅ signature update
+        return Response({"status": "enqueued"}, status=202)
+
