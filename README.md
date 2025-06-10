@@ -30,7 +30,7 @@ A Django-based service for orchestrating computer vision model inference jobs us
    docker-compose up --build
    ```
    This will start:
-   - Django web server (on port 69)
+   - Django web server (on port 8001)
    - Celery worker
    - Redis
 
